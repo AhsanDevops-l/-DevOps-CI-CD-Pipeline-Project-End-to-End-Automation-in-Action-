@@ -1,0 +1,128 @@
+
+trigger:
+  - main
+
+variables:
+  imageName: "myapp"
+  dockerRegistryServiceConnection: "docker-hub-connection"
+  containerRegistry: "your-dockerhub-user"
+  k8sServiceConnection: "k8s-connection"
+  sonarQubeServiceConnection: "sonarqube-connection"
+
+stages:
+
+# -----------------------------
+# BUILD STAGE
+# -----------------------------
+- stage: Build
+  displayName: "Build with Maven"
+  jobs:
+    - job: mavenBuild
+      displayName: "Maven Clean Package"
+      pool:
+        vmImage: ubuntu-latest
+      steps:
+        - task: Maven@4
+          displayName: "Run Maven Build"
+          inputs:
+            mavenPomFile: "pom.xml"
+            goals: "clean package"
+            publishJUnitResults: "true"
+            javaHomeOption: "JDKVersion"
+            jdkVersionOption: "1.11"
+            mavenVersionOption: "Default"
+
+# -----------------------------
+# CODE QUALITY STAGE (SONARQUBE)
+# -----------------------------
+- stage: Code_Quality
+  displayName: "SonarQube Code Analysis"
+  jobs:
+    - job: sonar
+      pool:
+        vmImage: ubuntu-latest
+      steps:
+        - task: SonarQubePrepare@5
+          displayName: "Prepare SonarQube"
+          inputs:
+            SonarQube: "$(sonarQubeServiceConnection)"
+            scannerMode: "Other"
+        - script: mvn verify sonar:sonar
+          displayName: "Run SonarQube Scan"
+        - task: SonarQubePublish@5
+          inputs:
+            pollingTimeoutSec: "300"
+
+# -----------------------------
+# CONTAINERIZATION (DOCKER)
+# -----------------------------
+- stage: Containerize
+  displayName: "Build Docker Image"
+  jobs:
+    - job: dockerBuild
+      pool:
+        vmImage: ubuntu-latest
+      steps:
+        - task: Docker@2
+          displayName: "Docker Build"
+          inputs:
+            command: "build"
+            repository: "$(containerRegistry)/$(imageName)"
+            Dockerfile: "**/Dockerfile"
+            tags: "$(Build.BuildId)"
+
+        - task: Docker@2
+          displayName: "Docker Push"
+          inputs:
+            command: "push"
+            repository: "$(containerRegistry)/$(imageName)"
+            tags: "$(Build.BuildId)"
+            containerRegistry: "$(dockerRegistryServiceConnection)"
+
+# -----------------------------
+# SECURITY SCAN (TRIVY)
+# -----------------------------
+- stage: Security_Scan
+  displayName: "Trivy Image Scan"
+  jobs:
+    - job: trivyScan
+      pool:
+        vmImage: ubuntu-latest
+      steps:
+        - script: |
+            echo "🔍 Starting Trivy Scan..."
+            trivy image $(containerRegistry)/$(imageName):$(Build.BuildId)
+          displayName: "Scan Docker Image with Trivy"
+
+# -----------------------------
+# DEPLOYMENT (KUBERNETES)
+# -----------------------------
+- stage: Deploy
+  displayName: "Deploy to Kubernetes"
+  jobs:
+    - job: deployToK8s
+      pool:
+        vmImage: ubuntu-latest
+      steps:
+        - task: KubernetesManifest@1
+          displayName: "Deploy to AKS"
+          inputs:
+            kubernetesServiceConnection: "$(k8sServiceConnection)"
+            manifests: |
+              k8s/deployment.yaml
+              k8s/service.yaml
+            containers: |
+              $(containerRegistry)/$(imageName):$(Build.BuildId)
+
+# -----------------------------
+# MONITORING (PROMETHEUS)
+# -----------------------------
+- stage: Monitoring
+  displayName: "Prometheus Monitoring Setup"
+  jobs:
+    - job: monitoring
+      pool:
+        vmImage: ubuntu-latest
+      steps:
+        - script: echo "Prometheus monitors K8s metrics automatically."
+          displayName: "Monitoring Confirmation"
